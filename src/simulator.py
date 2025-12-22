@@ -116,6 +116,7 @@ class BurstGI:
             case "Exp":
                 self.arrival_times = np.random.exponential(self.a_scale, self.K)
 
+        service = None
         match self.B_distr:  # service time distribution
             case "Exp":
                 service = np.random.exponential
@@ -125,6 +126,8 @@ class BurstGI:
             case "Geom":
                 num_func = np.random.geometric
 
+        if service is None:
+            raise ValueError(f"Service time distribution '{self.B_distr}' isn't appropriate!")
         match self.Burst_number_distr:  # number of applications in burst distribution
             case "Poiss":
                 i = num_func(self.burst_prob)
@@ -149,11 +152,14 @@ class BurstGI:
         Returns:
             List[np.array]: merged workload
         """
-        wld = binary_insert(wld[self.m:], wld[: self.m])
-        wld = binary_insert(wld, demand)
-        if len(wld) > self.n + self.m:
-            self.wasted_demands += len(wld) - (self.n + self.m)
-        return wld[: self.n + self.m]  # TODO: here overflow_policy must be used
+        servers = wld[:self.m]
+        queue = wld[self.m:]
+
+        new_wld = np.concatenate((servers, binary_insert(queue, demand)))
+
+        if len(new_wld) > self.n + self.m:
+            new_wld = new_wld[:self.n + self.m]
+        return new_wld
 
     def run_sjf(self, disable_progress_bar: bool = False) -> None:
         """Runs simulation with SJF policy"""
