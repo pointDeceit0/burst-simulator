@@ -155,10 +155,10 @@ class BurstGI:
             self.wasted_demands += len(wld) - (self.n + self.m)
         return wld[: self.n + self.m]  # TODO: here overflow_policy must be used
 
-    def run_sjf(self) -> None:
+    def run_sjf(self, disable_progress_bar: bool = False) -> None:
         """Runs simulation with SJF policy"""
         workload: np.ndarray = None  # then this will be similar that workload has infinity in it
-        for arrival_time, demand in zip(tqdm(self.arrival_times), self.demands):
+        for arrival_time, demand in zip(tqdm(self.arrival_times, disable=disable_progress_bar), self.demands):
             # for correct binary inserting
             demand = np.sort(demand)
 
@@ -231,11 +231,14 @@ class BurstGI:
             workload[: self.m] -= workload[0]
             workload = workload[workload > 0]
 
-    def run(self, show_statistics: bool = False) -> Tuple[np.ndarray, np.ndarray, int, List[np.ndarray]]:
+    def run(self, show_statistics: bool = False,
+            disable_progress_bar: bool = False) -> Tuple[np.ndarray, np.ndarray, int, List[np.ndarray]]:
         """Runs simulation depends on input service policy
 
         Attributes:
             show_statistics (bool): show statistics in the end of simulation (True) or not (False). Defaults to False.
+            disable_progress_bar (bool): disable progress bar for each separate experiment (True) or not (False).
+                                                                                                    Defaults to False
 
         Returns:
             Tuple[np.ndarray, np.ndarray, int, List[np.ndarray]]: state times, state occurences,
@@ -244,7 +247,7 @@ class BurstGI:
         self.__reset_state()
         match self.service_policy:
             case "SJF":
-                self.run_sjf()
+                self.run_sjf(disable_progress_bar)
 
         if show_statistics:
             self.print_statistics()
