@@ -109,33 +109,11 @@ class BurstGI:
     def __initialize_system(self):
         # visit states accordingly to positions. Queue + services number + empty busy
         self.v = np.zeros(self.m + self.n + 1, int)
-        # times in states accordingly to position. Queue + services number + empty busy
+        # times in states accordingly to position
         self.times = np.zeros(self.m + self.n + 1, float)
 
-        match self.A_distr:  # receipt applications time distribution
-            case "Exp":
-                self.arrival_times = np.random.exponential(self.a_scale, self.K)
-
-        service = None
-        match self.B_distr:  # service time distribution
-            case "Exp":
-                service = np.random.exponential
-                self.demands = list(np.random.exponential(self.b_scale, self.K).reshape((self.K, 1)))
-
-        match self.Burst_distr:  # probability before birst distribution
-            case "Geom":
-                num_func = np.random.geometric
-
-        if service is None:
-            raise ValueError(f"Service time distribution '{self.B_distr}' isn't appropriate!")
-        match self.Burst_number_distr:  # number of applications in burst distribution
-            case "Poiss":
-                i = num_func(self.burst_prob)
-                while i < self.K:
-                    # if there 0 element from Poisson replace it with 1
-                    self.demands[i] = service(self.b_scale,
-                                              1 if (v := np.random.poisson(self.burst_scale)) == 0 else v,)
-                    i += num_func(self.burst_prob)
+        self.arrival_times = None
+        self.demands = None
 
     def __reset_state(self):
         self.workload_process: List[np.ndarray] = []
@@ -159,83 +137,142 @@ class BurstGI:
 
         if len(new_wld) > self.n + self.m:
             new_wld = new_wld[:self.n + self.m]
+            self.wasted_demands += len(new_wld) - self.n + self.m
         return new_wld
+
+    def _infinite_traffic_generator(self):
+        """Generates (arrival_interval, demand) on the fly forever."""
+
+        # B_distr
+        if self.B_distr == "Exp":
+            service_func = lambda: np.random.exponential(self.b_scale)  # noqa
+        else:
+            raise ValueError("Unsupported B_distr")
+
+        # Burst logic preparation
+        if self.Burst_distr == "Geom":
+            steps_to_burst = np.random.geometric(self.burst_prob)
+        else:
+            steps_to_burst = 0  # Fallback
+
+        while True:
+            if self.A_distr == "Exp":
+                arrival_interval = np.random.exponential(self.a_scale)
+            else:
+                arrival_interval = 0  # Fallback
+
+            steps_to_burst -= 1
+
+            if steps_to_burst <= 0:
+                # Burst_number_distr
+                if self.Burst_number_distr == "Poiss":
+                    burst_size = np.random.poisson(self.burst_scale)
+                    # zero correction
+                    if burst_size == 0:
+                        burst_size = 1
+                else:
+                    burst_size = 1
+
+                demand = np.random.exponential(self.b_scale, burst_size)
+
+                if self.Burst_distr == "Geom":
+                    steps_to_burst = np.random.geometric(self.burst_prob)
+            else:
+                # ОБЫЧНАЯ ЗАЯВКА
+                demand = np.array([service_func()])
+
+            yield arrival_interval, demand
 
     def run_sjf(self, disable_progress_bar: bool = False) -> None:
         """Runs simulation with SJF policy"""
-        workload: np.ndarray = None  # then this will be similar that workload has infinity in it
-        for arrival_time, demand in zip(tqdm(self.arrival_times, disable=disable_progress_bar), self.demands):
-            # for correct binary inserting
+        workload: np.ndarray = None
+        cycles_count = 0
+
+        # Используем генератор, так как заранее неизвестно, сколько заявок нужно для K циклов
+        traffic_stream = self._infinite_traffic_generator()
+
+        pbar = tqdm(total=self.K, disable=disable_progress_bar, desc="Regeneration Cycles")
+
+        for arrival_time, demand in traffic_stream:
+
+            # 1. Проверка регенерации при старте (если система была пуста изначально)
+            if workload is None or len(workload) == 0:
+                cycles_count += 1
+                pbar.update(1)
+                if cycles_count > self.K:
+                    break
+
+            # Сортировка (SJF)
             demand = np.sort(demand)
-
-            # workload writing
             self.workload_process.append(workload)
-            if workload is None:  # first iteration
-                workload = demand[: self.n + self.m]
 
-                # statistics collection
+            # --- ЛОГИКА ОБРАБОТКИ ---
+
+            # Случай 0: Первая итерация
+            if workload is None:
+                workload = demand[: self.n + self.m]
                 self.times[0] += arrival_time
                 self.v[0] += 1
                 continue
+
+            # Случай 1: Новая заявка пришла раньше, чем закончилась текущая работа
             if arrival_time < workload[0]:
                 workload[: self.m] -= arrival_time
-
-                # statistics collection
                 self.times[len(workload)] += arrival_time
                 self.v[len(workload)] += 1
-
-                # renewing
                 workload = self.__renew_workload(workload, demand)
+
+            # Случай 2: Заявка пришла ровно в момент окончания
             elif arrival_time == workload[0]:
                 workload[: self.m] -= workload[0]
-
-                # statistics collection
                 self.times[len(workload)] += arrival_time
                 self.v[len(workload)] += 1
-
-                # state transformation
                 workload = workload[workload > 0]
                 workload = self.__renew_workload(workload, demand)
+
+            # Случай 3: Простой системы (Arrival > Workload)
             else:
+                # Проматываем время, пока есть работа
                 while len(workload) > 0 and arrival_time > workload[0]:
                     arrival_time -= workload[0]
-
-                    # statistics collection
                     self.times[len(workload)] += workload[0]
                     self.v[len(workload)] += 1
-
-                    # state transformation
                     workload[: self.m] -= workload[0]
                     workload = workload[workload > 0]
-
-                    # workload writing
                     self.workload_process.append(workload)
+
+                # Если работа кончилась, но заявка еще не пришла -> ПРОСТОЙ
                 if len(workload) > 0 and arrival_time < workload[0]:
                     workload[: self.m] -= arrival_time
-
-                    # statistics collection
                     self.times[len(workload)] += arrival_time
                     self.v[len(workload)] += 1
-
                     workload = self.__renew_workload(workload, demand)
-                if len(workload) == 0 and arrival_time > 0:
-                    # statistics collection
-                    self.times[0] += arrival_time
-                    self.v[len(workload)] += 1
 
-                    # state transformation
+                if len(workload) == 0 and arrival_time > 0:
+                    # Система опустела и было время простоя.
+                    # Значит, цикл регенерации завершился ПРЯМО СЕЙЧАС.
+                    cycles_count += 1
+                    pbar.update(1)
+                    if cycles_count > self.K:
+                        break
+
+                    # Статистика простоя (состояние 0)
+                    self.times[0] += arrival_time
+                    self.v[0] += 1
+
+                    # Кладем новую заявку в пустую систему
                     workload = demand[: self.n + self.m]
 
-        while len(workload) > 0:
-            self.workload_process.append(workload)
+        pbar.close()
 
-            # statistics collection
-            self.times[len(workload)] += workload[0]
-            self.v[len(workload)] += 1
-
-            # state transformation
-            workload[: self.m] -= workload[0]
-            workload = workload[workload > 0]
+        # Дочищаем хвосты (хотя при break мы сюда не всегда попадем, это ок)
+        if cycles_count <= self.K:
+            while workload is not None and len(workload) > 0:
+                self.workload_process.append(workload)
+                self.times[len(workload)] += workload[0]
+                self.v[len(workload)] += 1
+                workload[: self.m] -= workload[0]
+                workload = workload[workload > 0]
 
     def run(self, show_statistics: bool = False,
             disable_progress_bar: bool = False) -> Tuple[np.ndarray, np.ndarray, int, List[np.ndarray]]:
@@ -269,5 +306,5 @@ class BurstGI:
 
 
 if __name__ == "__main__":
-    burst_model = BurstGI(5, 3, 2, 0.5)
+    burst_model = BurstGI(5, 3, 2, 0.5, b_scale=2, a_scale=1)
     times, v, wasted_jobs, *_ = burst_model.run(show_statistics=True)
