@@ -158,7 +158,7 @@ class BurstGI:
     def run_sjf(self) -> None:
         """Runs simulation with SJF policy"""
         workload: np.ndarray = None  # then this will be similar that workload has infinity in it
-        for arrival_time, demand in tqdm(zip(self.arrival_times, self.demands)):
+        for arrival_time, demand in zip(tqdm(self.arrival_times), self.demands):
             # for correct binary inserting
             demand = np.sort(demand)
 
